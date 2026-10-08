@@ -30,6 +30,9 @@ class SOFollowerConfig:
 
     disable_torque_on_disconnect: bool = True
 
+    # Additional attempts for transient position-read communication failures (3 total attempts).
+    position_read_retries: int = 2
+
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
     # Set this to a positive scalar to have the same value for all motors, or a dictionary that maps motor
     # names to the max_relative_target value for that motor.

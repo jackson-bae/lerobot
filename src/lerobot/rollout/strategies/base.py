@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from lerobot.utils.robot_utils import precise_sleep
@@ -48,6 +49,7 @@ class BaseStrategy(RolloutStrategy):
 
         control_interval = interpolator.get_control_interval(cfg.fps)
 
+        profile_timing = os.environ.get("LEROBOT_PROFILE_TIMING") == "1"
         start_time = time.perf_counter()
         engine.resume()
         logger.info("Base strategy control loop started")
@@ -60,15 +62,27 @@ class BaseStrategy(RolloutStrategy):
                 break
 
             obs = robot.get_observation()
+            observed = time.perf_counter()
             obs_processed = self._process_observation_and_notify(ctx.processors, obs)
 
             if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
                 continue
 
+            processed = time.perf_counter()
             action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
+            dispatched = time.perf_counter()
             self._log_telemetry(obs_processed, action_dict, ctx.runtime)
 
             dt = time.perf_counter() - loop_start
+            if profile_timing:
+                logger.info(
+                    "Loop timing: observation=%.1fms observation_processing=%.1fms "
+                    "inference/send=%.1fms total=%.1fms",
+                    (observed - loop_start) * 1000,
+                    (processed - observed) * 1000,
+                    (dispatched - processed) * 1000,
+                    dt * 1000,
+                )
             if (sleep_t := control_interval - dt) > 0:
                 precise_sleep(sleep_t)
             else:

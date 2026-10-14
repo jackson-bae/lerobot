@@ -128,6 +128,26 @@ class FeetechMotorsBus(SerialMotorsBus):
         if any(MODEL_PROTOCOL[model] != self.protocol_version for model in self.models):
             raise ValueError(f"Some motors are incompatible with protocol_version={self.protocol_version}")
 
+    def read_positions(self, *, num_retry: int = 0, timeout_ms: float | None = None) -> dict[str, Value]:
+        """Read positions with an optional per-attempt packet timeout.
+
+        The SDK resets its deadline inside each request, so temporarily override
+        that setter. Like other bus transactions, callers must serialize access.
+        Always restore it, including when all retries fail.
+        """
+        if timeout_ms is None:
+            return self.sync_read("Present_Position", num_retry=num_retry)
+        if not 0 < timeout_ms < float("inf"):
+            raise ValueError("Position read timeout must be finite and positive")
+        previous_setter = self.port_handler.setPacketTimeout
+        self.port_handler.setPacketTimeout = lambda packet_length: self.port_handler.setPacketTimeoutMillis(
+            timeout_ms
+        )
+        try:
+            return self.sync_read("Present_Position", num_retry=num_retry)
+        finally:
+            self.port_handler.setPacketTimeout = previous_setter
+
     def _assert_same_protocol(self) -> None:
         if any(MODEL_PROTOCOL[model] != self.protocol_version for model in self.models):
             raise RuntimeError("Some motors use an incompatible protocol.")

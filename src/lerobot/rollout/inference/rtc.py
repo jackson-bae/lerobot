@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import logging
 import math
+import os
 import time
 import traceback
 from threading import Event, Lock, Thread
@@ -124,6 +125,11 @@ class RTCInferenceEngine(InferenceEngine):
         rtc_queue_threshold: int = 30,
         shutdown_event: Event | None = None,
     ) -> None:
+        self._profile_timing = os.environ.get("LEROBOT_PROFILE_TIMING") == "1"
+        self._diagnostic_action_seen = False
+        self._diagnostic_startup_empty = 0
+        self._diagnostic_starved = 0
+        self._diagnostic_served = 0
         self._policy = policy
         self._preprocessor = preprocessor
         self._postprocessor = postprocessor
@@ -224,6 +230,15 @@ class RTCInferenceEngine(InferenceEngine):
                 logger.info("RTC inference thread stopped")
             self._rtc_thread = None
 
+        if self._profile_timing:
+            logger.info(
+                "RTC queue summary: actions_served=%d startup_empty_polls=%d "
+                "empty_polls_after_first_action=%d",
+                self._diagnostic_served,
+                self._diagnostic_startup_empty,
+                self._diagnostic_starved,
+            )
+
     def pause(self) -> None:
         """Pause the RTC background thread."""
         logger.info("Pausing RTC inference thread")
@@ -237,6 +252,10 @@ class RTCInferenceEngine(InferenceEngine):
     def reset(self) -> None:
         """Reset the policy, processors, and action queue."""
         logger.info("Resetting RTC inference state (policy + processors + queue)")
+        self._diagnostic_action_seen = False
+        self._diagnostic_startup_empty = 0
+        self._diagnostic_starved = 0
+        self._diagnostic_served = 0
         self._policy.reset()
         self._preprocessor.reset()
         self._postprocessor.reset()
@@ -251,7 +270,16 @@ class RTCInferenceEngine(InferenceEngine):
         """Pop the next action from the RTC queue (ignores ``obs_frame``)."""
         if self._action_queue is None:
             return None
-        return self._action_queue.get()
+        action = self._action_queue.get()
+        if self._profile_timing:
+            if action is not None:
+                self._diagnostic_action_seen = True
+                self._diagnostic_served += 1
+            elif self._diagnostic_action_seen:
+                self._diagnostic_starved += 1
+            else:
+                self._diagnostic_startup_empty += 1
+        return action
 
     def notify_observation(self, obs: dict) -> None:
         """Publish the latest observation for the RTC thread to consume."""
@@ -339,7 +367,22 @@ class RTCInferenceEngine(InferenceEngine):
                         else:
                             latency_tracker.add(new_latency)
 
+                        if self._profile_timing:
+                            # Snapshot only: the control thread can consume actions before merge.
+                            remaining_before_merge = queue.qsize()
                         queue.merge(original, processed, new_delay, idx_before)
+                        if self._profile_timing:
+                            logger.info(
+                                "RTC prediction: phase=%s host_pipeline_ms=%.1f "
+                                "estimated_delay_steps=%d generated=%d "
+                                "queue_before_merge_snapshot=%d queue_after_merge_snapshot=%d",
+                                "startup" if inference_count == 1 else "running",
+                                new_latency * 1000,
+                                new_delay,
+                                len(processed),
+                                remaining_before_merge,
+                                queue.qsize(),
+                            )
 
                         if (
                             is_warmup

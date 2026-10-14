@@ -151,6 +151,7 @@ Usage examples
 """
 
 import logging
+import os
 
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
@@ -199,10 +200,27 @@ from lerobot.utils.visualization_utils import init_visualization, shutdown_visua
 logger = logging.getLogger(__name__)
 
 
+class _TimingDebugFilter(logging.Filter):
+    """Keep normal logs plus the bus retries and per-device observation timings."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.INFO or record.name in {
+            "lerobot.motors.motors_bus",
+            "lerobot.robots.so_follower.so_follower",
+        }
+
+
 @parser.wrap()
 def rollout(cfg: RolloutConfig):
     """Main entry point for policy deployment."""
     init_logging()
+    if os.environ.get("LEROBOT_PROFILE_TIMING") == "1":
+        # The rollout shell script redirects this stream into its diagnostic file.
+        for handler in logging.getLogger().handlers:
+            handler.setLevel(logging.DEBUG)
+            handler.addFilter(_TimingDebugFilter())
+        logging.getLogger("lerobot.motors.motors_bus").setLevel(logging.DEBUG)
+        logging.getLogger("lerobot.robots.so_follower.so_follower").setLevel(logging.DEBUG)
 
     if cfg.display_data:
         logger.info(

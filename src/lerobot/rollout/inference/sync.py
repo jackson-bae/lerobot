@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from contextlib import nullcontext
 from copy import copy
 
@@ -65,6 +67,7 @@ class SyncInferenceEngine(InferenceEngine):
         device: str | None,
         robot_type: str,
     ) -> None:
+        self._profile_timing = os.environ.get("LEROBOT_PROFILE_TIMING") == "1"
         self._policy = policy
         self._preprocessor = preprocessor
         self._postprocessor = postprocessor
@@ -107,14 +110,36 @@ class SyncInferenceEngine(InferenceEngine):
             if self._device.type == "cuda" and self._policy.config.use_amp
             else nullcontext()
         )
+        def timestamp():
+            # GPU work is asynchronous; synchronize only during diagnostic runs.
+            if self._profile_timing:
+                if self._device.type == "mps":
+                    torch.mps.synchronize()
+                elif self._device.type == "cuda":
+                    torch.cuda.synchronize(self._device)
+                return time.perf_counter()
+            return 0.0
+
+        started = timestamp()
         with torch.inference_mode(), autocast_ctx:
             observation = prepare_observation_for_inference(
                 observation, self._device, self._task, self._robot_type
             )
             observation = self._preprocessor(observation)
+            prepared = timestamp()
             action = self._policy.select_action(observation)
+            predicted = timestamp()
             action = self._postprocessor(action)
         action_tensor = action.squeeze(0).cpu()
+
+        finished = timestamp()
+        if self._profile_timing:
+            logger.info(
+                "Sync timing: preprocess=%.1fms select_action=%.1fms postprocess/cpu=%.1fms",
+                (prepared - started) * 1000,
+                (predicted - prepared) * 1000,
+                (finished - predicted) * 1000,
+            )
 
         # Reorder to match dataset action ordering so the caller can treat
         # the returned tensor uniformly across backends.
